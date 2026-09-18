@@ -2143,6 +2143,16 @@
           }
         }
 
+        // ============================================================
+        // KONFIGURASI PROXY AI UNTUK VERSI DI-HOSTING SENDIRI (GitHub Pages, dll)
+        // ============================================================
+        // Kosongkan ('') kalau file ini HANYA dipakai di dalam claude.ai.
+        // Isi dengan URL Cloudflare Worker Anda (lihat worker.js) setelah
+        // di-deploy, supaya fitur AI tetap jalan saat situs dibuka dari
+        // domain sendiri (di luar claude.ai). Contoh:
+        // var AI_PROXY_URL = 'https://cv-ai-proxy.namaanda.workers.dev';
+        var AI_PROXY_URL = "";
+
         var sampleCapPromise = null;
         function getSampleCap() {
           if (!sampleCapPromise) {
@@ -2156,6 +2166,59 @@
                 : Promise.resolve(null);
           }
           return sampleCapPromise;
+        }
+
+        // Menjalankan prompt teks ke AI. Coba pakai kemampuan AI bawaan
+        // claude.ai dulu (gratis, tanpa setup); kalau tidak tersedia (mis. situs
+        // sedang dibuka di GitHub Pages) dan AI_PROXY_URL sudah diisi, otomatis
+        // beralih memakai proxy sendiri.
+        async function runAiPrompt(promptText) {
+          var sample = await getSampleCap();
+          if (sample) {
+            var result = await sample(promptText, { modelTier: "default" });
+            return (result && result.text) || "";
+          }
+
+          if (AI_PROXY_URL) {
+            var resp;
+            try {
+              resp = await fetch(AI_PROXY_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prompt: promptText }),
+              });
+            } catch (networkErr) {
+              var eNet = new Error(
+                "Tidak bisa menghubungi server AI (cek koneksi internet atau URL proxy).",
+              );
+              eNet.code = "upstream_error";
+              throw eNet;
+            }
+            var data;
+            try {
+              data = await resp.json();
+            } catch (parseErr) {
+              var eParse = new Error(
+                "Respons proxy bukan JSON valid (status " + resp.status + ").",
+              );
+              eParse.code = "upstream_error";
+              throw eParse;
+            }
+            if (!resp.ok) {
+              var eApi = new Error(
+                data && data.error ? data.error : "HTTP " + resp.status,
+              );
+              eApi.code = "upstream_error";
+              throw eApi;
+            }
+            return data.text || "";
+          }
+
+          var eNone = new Error(
+            "Fitur AI tidak tersedia di tampilan ini. Buka halaman ini dari dalam chat claude.ai, atau atur AI_PROXY_URL di kode untuk memakai AI di situs sendiri.",
+          );
+          eNone.code = "no_ai_backend";
+          throw eNone;
         }
 
         var SAMPLE_ERROR_MESSAGES = {
@@ -2273,21 +2336,13 @@
           btn.setAttribute("disabled", "disabled");
           label.textContent = "⏳ Memproses...";
           try {
-            var sample = await getSampleCap();
-            if (!sample) {
-              toast(
-                "Fitur AI tidak tersedia di tampilan ini. Buka halaman ini dari dalam chat claude.ai, lalu coba lagi.",
-              );
-              return;
-            }
             var promptText =
               'Berikut adalah teks daftar sertifikasi/lisensi yang disalin apa adanya dari sebuah profil (mungkin berantakan formatnya karena hasil copy-paste):\n\n"""\n' +
               rawInput +
               '\n"""\n\n' +
               CERT_PROMPT_BASE.replace("{SOURCE}", "teks tersebut");
 
-            var result = await sample(promptText, { modelTier: "default" });
-            var rawText = (result && result.text) || "";
+            var rawText = await runAiPrompt(promptText);
             var items = parseCertItemsFromRawText(rawText);
             var added = addCertItemsFromAi(
               items,
